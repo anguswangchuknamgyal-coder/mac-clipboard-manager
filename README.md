@@ -1,0 +1,86 @@
+# 拾贴 · ClipDrawer
+
+一个原生的 macOS 剪贴板历史工具：复制过的文字和图片都会被自动记录下来，悬停顶部把手就能铺下来回看，点一下回写到剪贴板。Liquid Glass 风格，可拖拽、可停靠到菜单栏。
+
+> 适用于 macOS 15 (Sequoia) 及以上。代码全部 SwiftUI + AppKit，构建只依赖 Swift Command Line Tools，不需要 Xcode。
+
+## 功能
+
+- 自动记录剪贴板的文字 / 图片历史
+- 顶部居中悬浮把手，悬停展开、移开/点击外部/久置自动收起
+- 列表项点一下即回写剪贴板（带「已复制」提示）
+- 拖把手到屏幕顶部可停靠到菜单栏（带飞入飞出动画）
+- 可设置最大保留条数（20–500，默认 50）
+- 清空历史 / 退出软件都有二次确认 + 动画
+- 退出前的剪贴板内容已持久化（重启不丢）
+
+## 安装
+
+### 方式一：下载 .dmg（推荐）
+
+到 [Releases](../../releases) 页下载最新版 `ClipDrawer-x.x.x.dmg`，打开后把 `拾贴.app` 拖进 Applications。
+
+首次启动如果系统提示「无法打开，因为它来自身份不明的开发者」：
+
+1. 在 Finder 里**右键** `拾贴.app` → **打开**
+2. 弹窗里再点一次 **打开** 即可
+
+> 这是因为 .dmg 里的 app 仅做了临时签名 (ad-hoc codesign)，没有走 Apple Developer ID + Notarization。代码完全开源，可自行从源码构建。
+
+### 方式二：从源码构建
+
+需要安装 Xcode Command Line Tools（不需要完整 Xcode）：
+
+```bash
+xcode-select --install        # 如果还没装
+git clone https://github.com/<your-username>/mac-clipboard-manager.git
+cd mac-clipboard-manager
+./build.sh                    # 生成 ./ClipDrawer.app
+open ./ClipDrawer.app
+```
+
+打包成 .dmg 安装包：
+
+```bash
+./make_dmg.sh                 # 生成 ./dist/ClipDrawer-x.x.x.dmg
+```
+
+## 开发 & 验证
+
+项目布局：
+
+```
+Sources/ClipDrawer/
+  main.swift              入口
+  AppController.swift     NSPanel、停靠、悬停展开/收起、动画
+  DrawerView.swift        SwiftUI 视图（把手、列表、设置）
+  HistoryStore.swift      历史持久化
+  ClipboardMonitor.swift  剪贴板轮询
+  ClipItem.swift          单条记录数据结构
+build.sh                  编译 + 打包成 .app
+make_dmg.sh               把 .app 进一步打包成 .dmg
+verify.swift              无头功能测试（用 CGWarp + CGWindowList 真正读窗口尺寸）
+```
+
+修改完之后，跑一遍自带的「功能测试」：
+
+```bash
+./build.sh && open ./ClipDrawer.app && sleep 1.5
+swift verify.swift            # 完整：悬停展开 → 多方向收起 → 久置自动收起
+swift verify.swift activate   # 切到别的 app → 收起
+swift verify.swift list       # 仅列出窗口
+```
+
+`verify.swift` 用 `CGWarpMouseCursorPosition` 模拟鼠标、用 `CGWindowListCopyWindowInfo` 真正去读窗口在屏幕上的尺寸——所以测试真实反映 UI 行为，而不是「代码看着应该能跑」。
+
+## 贡献
+
+欢迎 issue / PR。改动尽量遵循：
+
+- 任何行为改动都要能跑通 `swift verify.swift`，最好再写一个测试步骤进去
+- UI 类的改动如果没法自动验证（合成点击需要辅助功能权限），在 PR 描述里写清楚要手动确认什么
+- 提交说明描述「为什么」而不是「改了什么」（diff 已经讲了改了什么）
+
+## License
+
+[MIT](LICENSE) — 拿去随便用、随便改、随便分发。

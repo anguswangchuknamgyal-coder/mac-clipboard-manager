@@ -1,0 +1,59 @@
+import AppKit
+
+@MainActor
+final class ClipboardMonitor {
+    private let store: HistoryStore
+    private var timer: Timer?
+    private var lastChangeCount: Int
+    private var lastImageHash: Int?
+
+    init(store: HistoryStore) {
+        self.store = store
+        self.lastChangeCount = NSPasteboard.general.changeCount
+    }
+
+    func start() {
+        let t = Timer(timeInterval: 0.4, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.poll()
+            }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+    }
+
+    private func poll() {
+        let pb = NSPasteboard.general
+        guard pb.changeCount != lastChangeCount else { return }
+        lastChangeCount = pb.changeCount
+
+        // 优先文本；没有文本再看图片
+        if let str = pb.string(forType: .string),
+           !str.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            store.addText(str)
+            lastImageHash = nil
+            return
+        }
+
+        // 图片：tiff / png
+        if let data = pb.data(forType: .png) ?? pb.data(forType: .tiff) {
+            let pngData = normalizedPNG(from: data, sourceType: pb.data(forType: .png) != nil ? .png : .tiff)
+            guard let pngData else { return }
+            let hash = pngData.hashValue
+            if hash == lastImageHash { return }
+            lastImageHash = hash
+            store.addImage(pngData)
+        }
+    }
+
+    private func normalizedPNG(from data: Data, sourceType: NSBitmapImageRep.FileType) -> Data? {
+        if sourceType == .png { return data }
+        guard let rep = NSBitmapImageRep(data: data) else { return nil }
+        return rep.representation(using: .png, properties: [:])
+    }
+}

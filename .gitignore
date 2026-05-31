@@ -1,0 +1,24 @@
+## Swift / SwiftPM
+.build/
+.swiftpm/
+Package.resolved
+*.xcodeproj/
+*.xcworkspace/
+
+## Build output
+ClipDrawer.app/
+dist/
+*.dmg
+*.pkg
+
+## macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+
+## Editor
+.vscode/
+.idea/
+*.swp
