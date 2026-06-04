@@ -49,6 +49,39 @@ func clipSize() -> (w: CGFloat, h: CGFloat)? {
     return nil
 }
 
+// 读取 ClipDrawer 窗口的完整 frame（CG 顶左坐标；找不到返回 nil）
+func clipFrame() -> (x: CGFloat, y: CGFloat, w: CGFloat, h: CGFloat)? {
+    let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
+    for info in list {
+        let owner = info[kCGWindowOwnerName as String] as? String ?? "?"
+        guard owner.contains("ClipDrawer") || owner.contains("剪贴板") || owner.contains("拾贴") else { continue }
+        let b = info[kCGWindowBounds as String] as? [String: CGFloat] ?? [:]
+        return (b["X"] ?? -1, b["Y"] ?? -1, b["Width"] ?? -1, b["Height"] ?? -1)
+    }
+    return nil
+}
+
+// 在机器人上合成一次「按下 → 往下拖 → 松手」，测试拖动是否真的挪动了窗口。
+// 注意：合成拖动需「辅助功能」权限，无权限时事件不会送达 → 窗口不动（属环境问题，非代码 bug）。
+func dragCG(fromCG x: CGFloat, _ y: CGFloat, dx: CGFloat, dy: CGFloat, steps: Int = 12) {
+    let src = CGEventSource(stateID: .hidSystemState)
+    let start = CGPoint(x: x, y: y)
+    CGEvent(mouseEventSource: src, mouseType: .leftMouseDown, mouseCursorPosition: start, mouseButton: .left)?
+        .post(tap: .cghidEventTap)
+    Thread.sleep(forTimeInterval: 0.05)
+    for i in 1...steps {
+        let t = CGFloat(i) / CGFloat(steps)
+        let p = CGPoint(x: x + dx * t, y: y + dy * t)
+        let e = CGEvent(mouseEventSource: src, mouseType: .leftMouseDragged, mouseCursorPosition: p, mouseButton: .left)
+        e?.post(tap: .cghidEventTap)
+        Thread.sleep(forTimeInterval: 0.02)
+    }
+    let end = CGPoint(x: x + dx, y: y + dy)
+    CGEvent(mouseEventSource: src, mouseType: .leftMouseUp, mouseCursorPosition: end, mouseButton: .left)?
+        .post(tap: .cghidEventTap)
+    Thread.sleep(forTimeInterval: 0.05)
+}
+
 func clipHeight() -> CGFloat? { clipSize()?.h }
 
 func printClipWindows() {
@@ -122,6 +155,41 @@ case "clickout":
     print("点击面板外后 h 轨迹=[\(samples.map { String(format: "%.0f", $0) }.joined(separator: ","))]")
     print(ok ? "PASS ✅ 点击外部已收起" : "FAIL ❌ 点击外部未收起（或合成点击无权限未送达）")
 
+case "clickrobot":
+    // 直接在机器人当前位置合成一次单击，验证「合成事件能否送达 + mouseDown→onClick 是否展开」。
+    warpSettle(toCG: w / 2, fullH / 2)
+    Thread.sleep(forTimeInterval: 0.5)
+    guard let f0 = clipFrame() else { print("FAIL ❌ 找不到窗口"); break }
+    print("点击前 frame=(x:\(f0.x), y:\(f0.y), w:\(f0.w), h:\(f0.h))")
+    let rx = f0.x + f0.w / 2, ry = f0.y + 40
+    print("在机器人中心合成单击 @CG(\(Int(rx)),\(Int(ry)))")
+    clickCG(toCG: rx, ry)
+    var hs: [CGFloat] = []
+    for _ in 0..<10 { Thread.sleep(forTimeInterval: 0.12); hs.append(clipHeight() ?? -1) }
+    let expanded = hs.contains { $0 > 200 }
+    print("点击后 h 轨迹=[\(hs.map { String(format: "%.0f", $0) }.joined(separator: ","))]")
+    print(expanded ? "PASS ✅ 合成单击送达且 mouseDown→展开生效（→ 若拖动仍不动，是拖动循环的问题）"
+                   : "FAIL ❌ 点击无反应（合成事件未送达 / mouseDown 未触发）")
+
+case "drag":
+    // 在机器人上按住往下拖 ~180px，验证折叠面板被真正挪动（拖动功能）。
+    warpSettle(toCG: w / 2, fullH / 2)        // 先把鼠标移开，保证是折叠态
+    Thread.sleep(forTimeInterval: 0.6)
+    guard let before = clipFrame() else { print("FAIL ❌ 找不到 ClipDrawer 窗口"); break }
+    print("拖动前 frame=(x:\(before.x), y:\(before.y), w:\(before.w), h:\(before.h))")
+    // 机器人在折叠面板顶部 80pt 区域中央
+    let robotX = before.x + before.w / 2
+    let robotY = before.y + 40
+    dragCG(fromCG: robotX, robotY, dx: 0, dy: 180)
+    Thread.sleep(forTimeInterval: 0.4)
+    guard let after = clipFrame() else { print("FAIL ❌ 拖动后找不到窗口"); break }
+    print("拖动后 frame=(x:\(after.x), y:\(after.y), w:\(after.w), h:\(after.h))")
+    let movedY = after.y - before.y
+    print("纵向位移 = \(String(format: "%.0f", movedY)) px（期望 ≈180）")
+    let ok = movedY > 100
+    print(ok ? "PASS ✅ 机器人可拖动移动窗口"
+             : "FAIL ❌ 窗口没动（拖动失效，或合成拖动无辅助功能权限未送达）")
+
 case "list":
     printClipWindows()
 
@@ -160,31 +228,34 @@ default: // "cycle" 完整自动序列
     print("start height=\(clipHeight().map { String(format: "%.0f", $0) } ?? "n/a")")
 
     print("=== 三轮: 顶部悬停展开 → 不同方向移开收起 ===")
-    // 第一轮：移到屏幕正中央（远离）
+    // 第一轮：移到「屏幕下边附近」(原本是 fullH/2，但屏幕只有 1117 高时，展开面板的底部
+    // 已经覆盖到 NS y≈524，CG y≈558 的中点恰好落在面板内部 → 不会收起。这里改成更靠下的点
+    // 以确保在任意常见分辨率下都落在面板外。)
     step("1a hover-top  -> expand", warpX: handleX, warpY: handleY, expectExpanded: true)
-    step("1b far-center -> collapse", warpX: w / 2, warpY: fullH / 2, expectExpanded: false)
+    step("1b far-below  -> collapse", warpX: w / 2, warpY: fullH - 60, expectExpanded: false)
     // 第二轮：移到面板右侧外（贴着面板右边一点点，模拟随手挪开）
     step("2a hover-top  -> expand", warpX: handleX, warpY: handleY, expectExpanded: true)
     step("2b just-right -> collapse", warpX: handleX + 260, warpY: menu + 120, expectExpanded: false)
     // 第三轮：移到面板正下方外（展开高约 560，往下越过它一点）
     step("3a hover-top  -> expand", warpX: handleX, warpY: handleY, expectExpanded: true)
-    step("3b just-below -> collapse", warpX: handleX, warpY: menu + 620, expectExpanded: false)
+    step("3b just-below -> collapse", warpX: handleX, warpY: menu + 700, expectExpanded: false)
 
-    // 第四轮：展开后把鼠标停在「面板内部」且不再移动 → 久置应自动收起（不再操作软件）
-    print("=== 第四轮: 展开后鼠标停在面板内但不操作 → 自动收起 ===")
+    // 第四轮：展开后把鼠标停在「面板内部」且不再移动 → 应「保持展开」（不再有空闲自动收起）。
+    // 历史上这里测的是「2s 后自动收起」，现已移除——用户阅读列表/设置时不再被强行打断。
+    print("=== 第四轮: 展开后鼠标停在面板内不动 → 应保持展开 ===")
     warpSettle(toCG: handleX, handleY)            // 先悬停顶部展开
     Thread.sleep(forTimeInterval: 0.6)
     warpSettle(toCG: handleX, menu + 220)         // 移到面板内部（展开高~560，220 在面板内）
-    // 停住不动，采样 ~3.4s：期望前期仍展开、空闲约 2s 后自动收起
+    // 停住不动，采样 ~3.4s：所有采样都应是展开状态
     var idle: [(w: CGFloat, h: CGFloat)] = []
     for _ in 0..<34 { Thread.sleep(forTimeInterval: 0.1); idle.append(clipSize() ?? (-1, -1)) }
-    let earlyExpanded = idle.prefix(8).contains { $0.h > 200 }   // 前 ~0.8s 应还是展开
+    let collapsedSample = idle.first { $0.h <= 200 || $0.w < 200 }
     let finalIdle = idle.last ?? (-1, -1)
-    let idleOK = earlyExpanded && finalIdle.h <= 200 && finalIdle.w < 200
+    let idleOK = collapsedSample == nil && finalIdle.h > 200 && finalIdle.w > 200
     if !idleOK { fails += 1 }
     let idleTrace = idle.map { String(format: "%.0f", $0.h) }.joined(separator: ",")
-    print(String(format: "4 idle-on-panel -> auto-collapse  early=%@ finalH=%.0f finalW=%.0f -> %@   h[%@]",
-                 earlyExpanded ? "expanded" : "no", finalIdle.h, finalIdle.w,
+    print(String(format: "4 idle-on-panel -> stays expanded  finalH=%.0f finalW=%.0f -> %@   h[%@]",
+                 finalIdle.h, finalIdle.w,
                  idleOK ? "PASS" : "FAIL", idleTrace))
 
     print("=== 结果 ===")
